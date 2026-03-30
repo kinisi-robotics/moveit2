@@ -134,9 +134,17 @@ void initMoveitPy(py::module& m)
              execution_thread.detach();
 
              auto custom_deleter = [executor](moveit_cpp::MoveItCpp* moveit_cpp) {
+               // Cancel the executor first so the spin thread stops invoking
+               // callbacks while we tear down.
                executor->cancel();
-               rclcpp::shutdown();
+               // Delete MoveItCpp *before* rclcpp::shutdown() so that member
+               // destructors (PlanningSceneMonitor, TrajectoryExecutionManager)
+               // can cleanly destroy their DDS entities (publishers,
+               // subscriptions, action clients) while the middleware context is
+               // still alive.  The previous order (shutdown then delete) caused
+               // SIGSEGV because those destructors accessed freed DDS state.
                delete moveit_cpp;
+               rclcpp::shutdown();
              };
 
              std::shared_ptr<moveit_cpp::MoveItCpp> moveit_cpp_ptr(new moveit_cpp::MoveItCpp(node), custom_deleter);

@@ -134,17 +134,21 @@ void initMoveitPy(py::module& m)
              execution_thread.detach();
 
              auto custom_deleter = [executor](moveit_cpp::MoveItCpp* moveit_cpp) {
-               // Cancel the executor first so the spin thread stops invoking
-               // callbacks while we tear down.
                executor->cancel();
-               // Delete MoveItCpp *before* rclcpp::shutdown() so that member
-               // destructors (PlanningSceneMonitor, TrajectoryExecutionManager)
-               // can cleanly destroy their DDS entities (publishers,
-               // subscriptions, action clients) while the middleware context is
-               // still alive.  The previous order (shutdown then delete) caused
-               // SIGSEGV because those destructors accessed freed DDS state.
-               delete moveit_cpp;
-               rclcpp::shutdown();
+               if (rclcpp::ok())
+               {
+                 // Normal path: no explicit shutdown() was called.
+                 // Delete MoveItCpp while DDS is alive so member destructors
+                 // (PlanningSceneMonitor, TrajectoryExecutionManager) can
+                 // cleanly destroy their DDS entities.
+                 delete moveit_cpp;
+                 rclcpp::shutdown();
+               }
+               // else: shutdown() was already called, which stopped all DDS
+               // entities and called rclcpp::shutdown().  Deleting MoveItCpp
+               // now would SIGSEGV because PSM/TEM destructors access freed
+               // DDS state.  Intentionally skip delete — the process is
+               // exiting and the OS reclaims the memory.
              };
 
              std::shared_ptr<moveit_cpp::MoveItCpp> moveit_cpp_ptr(new moveit_cpp::MoveItCpp(node), custom_deleter);
@@ -186,9 +190,7 @@ void initMoveitPy(py::module& m)
           [](std::shared_ptr<moveit_cpp::MoveItCpp>& moveit_cpp) {
             // Stop PlanningSceneMonitor DDS entities (subscribers, publishers,
             // timers) and TrajectoryExecutionManager active executions while
-            // the middleware context is still alive.  Without this, their
-            // destructors run during Py_Finalize — after rclcpp::shutdown()
-            // has already torn down the DDS context — causing SIGSEGV.
+            // the middleware context is still alive.
             if (moveit_cpp)
             {
               auto psm = moveit_cpp->getPlanningSceneMonitorNonConst();
@@ -204,6 +206,12 @@ void initMoveitPy(py::module& m)
               {
                 tem->stopExecution(true);
               }
+              // Drop this reference while DDS is alive.  If this is the last
+              // shared_ptr (no PlanningComponents alive), the custom deleter
+              // fires now and cleanly destroys MoveItCpp.  If other references
+              // exist (PlanningComponents), the custom deleter fires later
+              // during Py_Finalize but skips delete (rclcpp::ok() == false).
+              moveit_cpp.reset();
             }
             rclcpp::shutdown();
           },

@@ -182,7 +182,31 @@ void initMoveitPy(py::module& m)
           )")
 
       .def(
-          "shutdown", [](std::shared_ptr<moveit_cpp::MoveItCpp>& /*moveit_cpp*/) { rclcpp::shutdown(); },
+          "shutdown",
+          [](std::shared_ptr<moveit_cpp::MoveItCpp>& moveit_cpp) {
+            // Stop PlanningSceneMonitor DDS entities (subscribers, publishers,
+            // timers) and TrajectoryExecutionManager active executions while
+            // the middleware context is still alive.  Without this, their
+            // destructors run during Py_Finalize — after rclcpp::shutdown()
+            // has already torn down the DDS context — causing SIGSEGV.
+            if (moveit_cpp)
+            {
+              auto psm = moveit_cpp->getPlanningSceneMonitorNonConst();
+              if (psm)
+              {
+                psm->stopPublishingPlanningScene();
+                psm->stopStateMonitor();
+                psm->stopWorldGeometryMonitor();
+                psm->stopSceneMonitor();
+              }
+              auto tem = moveit_cpp->getTrajectoryExecutionManagerNonConst();
+              if (tem)
+              {
+                tem->stopExecution(true);
+              }
+            }
+            rclcpp::shutdown();
+          },
           R"(
           Shutdown the moveit_cpp node.
           )")

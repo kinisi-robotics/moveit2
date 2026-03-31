@@ -100,6 +100,11 @@ void initMoveitPy(py::module& m)
              }
 
              // Initialize ROS, pass launch arguments with rclcpp::init()
+             // Track whether we own the rclcpp lifecycle so the deleter
+             // only calls rclcpp::shutdown() when MoveItPy called init().
+             // When rclpy.init() was called first, rclcpp is already
+             // running and rclpy owns the lifecycle.
+             bool owns_rclcpp = false;
              if (!rclcpp::ok())
              {
                std::vector<const char*> chars;
@@ -110,6 +115,7 @@ void initMoveitPy(py::module& m)
                }
 
                rclcpp::init(launch_arguments.size(), chars.data());
+               owns_rclcpp = true;
                RCLCPP_INFO(getLogger(), "Initialize rclcpp");
              }
 
@@ -133,23 +139,17 @@ void initMoveitPy(py::module& m)
              std::thread execution_thread(spin_node);
              execution_thread.detach();
 
-             auto custom_deleter = [executor](moveit_cpp::MoveItCpp* moveit_cpp) {
+             auto custom_deleter = [executor, owns_rclcpp](moveit_cpp::MoveItCpp* moveit_cpp) {
                executor->cancel();
                // Delete MoveItCpp *before* rclcpp::shutdown() so member
                // destructors (PlanningSceneMonitor, TrajectoryExecutionManager)
-               // can cleanly tear down their DDS entities (publishers,
-               // subscriptions, action clients) while the middleware context
-               // is still alive.
-               //
-               // The original upstream order (rclcpp::shutdown then delete)
-               // caused SIGSEGV because those destructors accessed freed DDS
-               // state during Py_Finalize.
-               //
-               // Callers should ensure this deleter fires while rclcpp is
-               // still active — typically by dropping all shared_ptr refs
-               // before calling rclpy.shutdown() from Python.
+               // can cleanly tear down their DDS entities while the
+               // middleware context is still alive.
                delete moveit_cpp;
-               rclcpp::shutdown();
+               if (owns_rclcpp)
+               {
+                 rclcpp::shutdown();
+               }
              };
 
              std::shared_ptr<moveit_cpp::MoveItCpp> moveit_cpp_ptr(new moveit_cpp::MoveItCpp(node), custom_deleter);

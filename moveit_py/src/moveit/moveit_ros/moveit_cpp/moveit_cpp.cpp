@@ -135,20 +135,21 @@ void initMoveitPy(py::module& m)
 
              auto custom_deleter = [executor](moveit_cpp::MoveItCpp* moveit_cpp) {
                executor->cancel();
-               if (rclcpp::ok())
-               {
-                 // Normal path: no explicit shutdown() was called.
-                 // Delete MoveItCpp while DDS is alive so member destructors
-                 // (PlanningSceneMonitor, TrajectoryExecutionManager) can
-                 // cleanly destroy their DDS entities.
-                 delete moveit_cpp;
-                 rclcpp::shutdown();
-               }
-               // else: shutdown() was already called, which stopped all DDS
-               // entities and called rclcpp::shutdown().  Deleting MoveItCpp
-               // now would SIGSEGV because PSM/TEM destructors access freed
-               // DDS state.  Intentionally skip delete — the process is
-               // exiting and the OS reclaims the memory.
+               // Delete MoveItCpp *before* rclcpp::shutdown() so member
+               // destructors (PlanningSceneMonitor, TrajectoryExecutionManager)
+               // can cleanly tear down their DDS entities (publishers,
+               // subscriptions, action clients) while the middleware context
+               // is still alive.
+               //
+               // The original upstream order (rclcpp::shutdown then delete)
+               // caused SIGSEGV because those destructors accessed freed DDS
+               // state during Py_Finalize.
+               //
+               // Callers should ensure this deleter fires while rclcpp is
+               // still active — typically by dropping all shared_ptr refs
+               // before calling rclpy.shutdown() from Python.
+               delete moveit_cpp;
+               rclcpp::shutdown();
              };
 
              std::shared_ptr<moveit_cpp::MoveItCpp> moveit_cpp_ptr(new moveit_cpp::MoveItCpp(node), custom_deleter);
@@ -188,9 +189,15 @@ void initMoveitPy(py::module& m)
       .def(
           "shutdown",
           [](std::shared_ptr<moveit_cpp::MoveItCpp>& moveit_cpp) {
-            // Stop PlanningSceneMonitor DDS entities (subscribers, publishers,
-            // timers) and TrajectoryExecutionManager active executions while
-            // the middleware context is still alive.
+            // Pre-shutdown: stop active DDS work (subscribers, publishers,
+            // timers, active trajectory executions) while the middleware
+            // context is still alive.
+            //
+            // This does NOT call rclcpp::shutdown() or destroy MoveItCpp.
+            // The caller (Python) is responsible for dropping all pybind11
+            // refs to MoveItPy/PlanningComponent objects, which triggers
+            // the custom shared_ptr deleter that handles destruction and
+            // rclcpp::shutdown() in the correct order.
             if (moveit_cpp)
             {
               auto psm = moveit_cpp->getPlanningSceneMonitorNonConst();
@@ -206,17 +213,15 @@ void initMoveitPy(py::module& m)
               {
                 tem->stopExecution(true);
               }
-              // Drop this reference while DDS is alive.  If this is the last
-              // shared_ptr (no PlanningComponents alive), the custom deleter
-              // fires now and cleanly destroys MoveItCpp.  If other references
-              // exist (PlanningComponents), the custom deleter fires later
-              // during Py_Finalize but skips delete (rclcpp::ok() == false).
-              moveit_cpp.reset();
             }
-            rclcpp::shutdown();
           },
           R"(
-          Shutdown the moveit_cpp node.
+          Pre-shutdown: stop active DDS work (monitors, trajectory execution).
+
+          After calling this, drop all Python references to MoveItPy and
+          PlanningComponent objects, then call ``gc.collect()``.  The C++
+          destructor and ``rclcpp::shutdown()`` run automatically via the
+          custom shared_ptr deleter when the last reference is released.
           )")
 
       .def("get_planning_scene_monitor", &moveit_cpp::MoveItCpp::getPlanningSceneMonitorNonConst,

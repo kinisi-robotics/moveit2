@@ -132,19 +132,15 @@ void initMoveitPy(py::module& m)
                  std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
 
              RCLCPP_INFO(getLogger(), "Spin separate thread");
-             auto spin_node = [node, executor]() {
-               executor->add_node(node);
-               executor->spin();
-             };
-             std::thread execution_thread(spin_node);
-             execution_thread.detach();
+             executor->add_node(node);
+             auto spin_thread = std::make_shared<std::thread>([executor]() { executor->spin(); });
 
-             auto custom_deleter = [executor, owns_rclcpp](moveit_cpp::MoveItCpp* moveit_cpp) {
+             auto custom_deleter = [executor, spin_thread, owns_rclcpp](moveit_cpp::MoveItCpp* moveit_cpp) {
                executor->cancel();
-               // Delete MoveItCpp *before* rclcpp::shutdown() so member
-               // destructors (PlanningSceneMonitor, TrajectoryExecutionManager)
-               // can cleanly tear down their DDS entities while the
-               // middleware context is still alive.
+               if (spin_thread->joinable())
+               {
+                 spin_thread->join();
+               }
                delete moveit_cpp;
                if (owns_rclcpp)
                {

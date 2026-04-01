@@ -141,8 +141,16 @@ void initMoveitPy(py::module& m)
                {
                  spin_thread->join();
                }
-               delete moveit_cpp;
-               if (owns_rclcpp)
+               // Only delete MoveItCpp if the ROS context is still alive.
+               // PSM's destructor calls private_executor_->cancel() which
+               // requires a valid context.  If rclpy already shut down the
+               // context (e.g. during Py_Finalize), skip the delete — the
+               // process is exiting and OS reclaims the memory.
+               if (rclcpp::ok())
+               {
+                 delete moveit_cpp;
+               }
+               if (owns_rclcpp && rclcpp::ok())
                {
                  rclcpp::shutdown();
                }
@@ -209,6 +217,7 @@ void initMoveitPy(py::module& m)
             // DDS is alive, then optionally calling rclcpp::shutdown().
             moveit_cpp.reset();
           },
+          py::call_guard<py::gil_scoped_release>(),
           R"(
           Shut down MoveItPy: stop monitors and release the C++ instance.
 

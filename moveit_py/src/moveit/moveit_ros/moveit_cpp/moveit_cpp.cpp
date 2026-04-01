@@ -185,39 +185,36 @@ void initMoveitPy(py::module& m)
       .def(
           "shutdown",
           [](std::shared_ptr<moveit_cpp::MoveItCpp>& moveit_cpp) {
-            // Pre-shutdown: stop active DDS work (subscribers, publishers,
-            // timers, active trajectory executions) while the middleware
-            // context is still alive.
-            //
-            // This does NOT call rclcpp::shutdown() or destroy MoveItCpp.
-            // The caller (Python) is responsible for dropping all pybind11
-            // refs to MoveItPy/PlanningComponent objects, which triggers
-            // the custom shared_ptr deleter that handles destruction and
-            // rclcpp::shutdown() in the correct order.
-            if (moveit_cpp)
+            if (!moveit_cpp)
             {
-              auto psm = moveit_cpp->getPlanningSceneMonitorNonConst();
-              if (psm)
-              {
-                psm->stopPublishingPlanningScene();
-                psm->stopStateMonitor();
-                psm->stopWorldGeometryMonitor();
-                psm->stopSceneMonitor();
-              }
-              auto tem = moveit_cpp->getTrajectoryExecutionManagerNonConst();
-              if (tem)
-              {
-                tem->stopExecution(true);
-              }
+              return;
             }
+            // Stop active DDS work while the middleware is still alive.
+            auto psm = moveit_cpp->getPlanningSceneMonitorNonConst();
+            if (psm)
+            {
+              psm->stopPublishingPlanningScene();
+              psm->stopStateMonitor();
+              psm->stopWorldGeometryMonitor();
+              psm->stopSceneMonitor();
+            }
+            auto tem = moveit_cpp->getTrajectoryExecutionManagerNonConst();
+            if (tem)
+            {
+              tem->stopExecution(true);
+            }
+            // Drop this holder's shared_ptr.  If the caller already released
+            // all PlanningComponent references, this is the last ref and the
+            // custom deleter fires immediately — destroying MoveItCpp while
+            // DDS is alive, then optionally calling rclcpp::shutdown().
+            moveit_cpp.reset();
           },
           R"(
-          Pre-shutdown: stop active DDS work (monitors, trajectory execution).
+          Shut down MoveItPy: stop monitors and release the C++ instance.
 
-          After calling this, drop all Python references to MoveItPy and
-          PlanningComponent objects, then call ``gc.collect()``.  The C++
-          destructor and ``rclcpp::shutdown()`` run automatically via the
-          custom shared_ptr deleter when the last reference is released.
+          Callers must drop all PlanningComponent references before calling
+          this so the shared_ptr refcount reaches zero here, triggering
+          deterministic C++ destruction with a live DDS context.
           )")
 
       .def("get_planning_scene_monitor", &moveit_cpp::MoveItCpp::getPlanningSceneMonitorNonConst,

@@ -211,19 +211,15 @@ void initMoveitPy(py::module& m)
             {
               tem->stopExecution(true);
             }
-            // Drop this holder's shared_ptr.  If the caller already released
-            // all PlanningComponent references, this is the last ref and the
-            // custom deleter fires immediately — destroying MoveItCpp while
-            // DDS is alive, then optionally calling rclcpp::shutdown().
-            moveit_cpp.reset();
           },
-          py::call_guard<py::gil_scoped_release>(),
           R"(
-          Shut down MoveItPy: stop monitors and release the C++ instance.
+          Stop active DDS work (monitors, trajectory execution).
 
-          Callers must drop all PlanningComponent references before calling
-          this so the shared_ptr refcount reaches zero here, triggering
-          deterministic C++ destruction with a live DDS context.
+          Does NOT destroy the MoveItCpp instance — upstream MoveIt2's
+          ~PlanningSceneMonitor has a threading bug that causes SIGSEGV
+          during destruction.  Callers should use os._exit() after this
+          to skip Py_Finalize, or rely on the rclcpp::ok() guard in the
+          custom deleter to safely skip destruction during Py_Finalize.
           )")
 
       .def("get_planning_scene_monitor", &moveit_cpp::MoveItCpp::getPlanningSceneMonitorNonConst,

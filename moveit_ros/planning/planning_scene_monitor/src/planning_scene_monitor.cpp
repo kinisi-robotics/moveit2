@@ -1564,6 +1564,9 @@ void PlanningSceneMonitor::getUpdatedFrameTransforms(std::vector<geometry_msgs::
     if (all_frame_name == target || getRobotModel()->hasLinkModel(all_frame_name))
       continue;
 
+    if (!tf_buffer_->canTransform(target, all_frame_name, tf2::TimePointZero))
+      continue;
+
     geometry_msgs::msg::TransformStamped f;
     try
     {

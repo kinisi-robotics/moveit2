@@ -100,6 +100,11 @@ void initMoveitPy(py::module& m)
              }
 
              // Initialize ROS, pass launch arguments with rclcpp::init()
+             // Track whether we own the rclcpp lifecycle so the deleter
+             // only calls rclcpp::shutdown() when MoveItPy called init().
+             // When rclpy.init() was called first, rclcpp is already
+             // running and rclpy owns the lifecycle.
+             bool owns_rclcpp = false;
              if (!rclcpp::ok())
              {
                std::vector<const char*> chars;
@@ -110,6 +115,7 @@ void initMoveitPy(py::module& m)
                }
 
                rclcpp::init(launch_arguments.size(), chars.data());
+               owns_rclcpp = true;
                RCLCPP_INFO(getLogger(), "Initialize rclcpp");
              }
 
@@ -126,17 +132,28 @@ void initMoveitPy(py::module& m)
                  std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
 
              RCLCPP_INFO(getLogger(), "Spin separate thread");
-             auto spin_node = [node, executor]() {
-               executor->add_node(node);
-               executor->spin();
-             };
-             std::thread execution_thread(spin_node);
-             execution_thread.detach();
+             executor->add_node(node);
+             auto spin_thread = std::make_shared<std::thread>([executor]() { executor->spin(); });
 
-             auto custom_deleter = [executor](moveit_cpp::MoveItCpp* moveit_cpp) {
+             auto custom_deleter = [executor, spin_thread, owns_rclcpp](moveit_cpp::MoveItCpp* moveit_cpp) {
                executor->cancel();
-               rclcpp::shutdown();
-               delete moveit_cpp;
+               if (spin_thread->joinable())
+               {
+                 spin_thread->join();
+               }
+               // Only delete MoveItCpp if the ROS context is still alive.
+               // PSM's destructor calls private_executor_->cancel() which
+               // requires a valid context.  If rclpy already shut down the
+               // context (e.g. during Py_Finalize), skip the delete — the
+               // process is exiting and OS reclaims the memory.
+               if (rclcpp::ok())
+               {
+                 delete moveit_cpp;
+               }
+               if (owns_rclcpp && rclcpp::ok())
+               {
+                 rclcpp::shutdown();
+               }
              };
 
              std::shared_ptr<moveit_cpp::MoveItCpp> moveit_cpp_ptr(new moveit_cpp::MoveItCpp(node), custom_deleter);
@@ -174,9 +191,35 @@ void initMoveitPy(py::module& m)
           )")
 
       .def(
-          "shutdown", [](std::shared_ptr<moveit_cpp::MoveItCpp>& /*moveit_cpp*/) { rclcpp::shutdown(); },
+          "shutdown",
+          [](std::shared_ptr<moveit_cpp::MoveItCpp>& moveit_cpp) {
+            if (!moveit_cpp)
+            {
+              return;
+            }
+            // Stop active DDS work while the middleware is still alive.
+            auto psm = moveit_cpp->getPlanningSceneMonitorNonConst();
+            if (psm)
+            {
+              psm->stopPublishingPlanningScene();
+              psm->stopStateMonitor();
+              psm->stopWorldGeometryMonitor();
+              psm->stopSceneMonitor();
+            }
+            auto tem = moveit_cpp->getTrajectoryExecutionManagerNonConst();
+            if (tem)
+            {
+              tem->stopExecution(true);
+            }
+          },
           R"(
-          Shutdown the moveit_cpp node.
+          Stop active DDS work (monitors, trajectory execution).
+
+          Does NOT destroy the MoveItCpp instance — upstream MoveIt2's
+          ~PlanningSceneMonitor has a threading bug that causes SIGSEGV
+          during destruction.  Callers should use os._exit() after this
+          to skip Py_Finalize, or rely on the rclcpp::ok() guard in the
+          custom deleter to safely skip destruction during Py_Finalize.
           )")
 
       .def("get_planning_scene_monitor", &moveit_cpp::MoveItCpp::getPlanningSceneMonitorNonConst,

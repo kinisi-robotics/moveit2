@@ -42,7 +42,6 @@
 #include <limits>
 #include <cmath>
 #include <memory>
-#include <stdexcept>
 #include <moveit/utils/logger.hpp>
 
 #include "order_robot_model_items.inc"
@@ -1279,11 +1278,6 @@ shapes::ShapePtr RobotModel::constructShape(const urdf::Geometry* geom)
       {
         Eigen::Vector3d scale(mesh->scale.x, mesh->scale.y, mesh->scale.z);
         shapes::Mesh* m = shapes::createMeshFromResource(mesh->filename, scale);
-        if (!m)
-        {
-          throw std::runtime_error("Failed to load collision mesh: " + mesh->filename +
-                                   ". The robot cannot operate without collision geometry.");
-        }
         new_shape = m;
       }
     }

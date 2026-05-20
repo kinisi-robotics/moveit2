@@ -36,7 +36,6 @@
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
 #include <moveit/utils/logger.hpp>
-#include <stdexcept>
 
 namespace collision_detection_bullet
 {
@@ -93,11 +92,6 @@ shapes::ShapePtr constructShape(const urdf::Geometry* geom)
       {
         Eigen::Vector3d scale(mesh->scale.x, mesh->scale.y, mesh->scale.z);
         shapes::Mesh* m = shapes::createMeshFromResource(mesh->filename, scale);
-        if (!m)
-        {
-          throw std::runtime_error("Failed to load collision mesh: " + mesh->filename +
-                                   ". The robot cannot operate without collision geometry.");
-        }
         result = m;
       }
     }

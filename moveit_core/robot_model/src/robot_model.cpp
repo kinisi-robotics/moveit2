@@ -39,13 +39,27 @@
 #include <geometric_shapes/shape_operations.h>
 #include <rclcpp/logger.hpp>
 #include <algorithm>
-#include <limits>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <moveit/utils/logger.hpp>
 
 #include "order_robot_model_items.inc"
+
+namespace
+{
+bool strictCollisionMeshes()
+{
+  static const bool strict = []() {
+    const char* env = std::getenv("MOVEIT_STRICT_COLLISION_MESHES");
+    // Strict by default; only disable when explicitly set to "0" or "false"
+    return !env || (std::string(env) != "0" && std::string(env) != "false");
+  }();
+  return strict;
+}
+}  // namespace
 
 namespace moveit
 {
@@ -1281,8 +1295,15 @@ shapes::ShapePtr RobotModel::constructShape(const urdf::Geometry* geom)
         shapes::Mesh* m = shapes::createMeshFromResource(mesh->filename, scale);
         if (!m)
         {
-          throw std::runtime_error("Failed to load collision mesh: " + mesh->filename +
-                                   ". The robot cannot operate without collision geometry.");
+          if (strictCollisionMeshes())
+          {
+            throw std::runtime_error("Failed to load collision mesh: " + mesh->filename +
+                                     ". The robot cannot operate without collision geometry."
+                                     " Set MOVEIT_STRICT_COLLISION_MESHES=0 to downgrade to a warning.");
+          }
+          RCLCPP_ERROR(getLogger(), "Failed to load collision mesh '%s' — collision geometry will be missing for this "
+                                    "link. Set MOVEIT_STRICT_COLLISION_MESHES=1 (default) to make this a fatal error.",
+                       mesh->filename.c_str());
         }
         new_shape = m;
       }

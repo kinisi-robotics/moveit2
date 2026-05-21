@@ -36,6 +36,37 @@
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
 #include <moveit/utils/logger.hpp>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <stdexcept>
+
+namespace
+{
+bool strictCollisionMeshes()
+{
+  static const bool strict = []() {
+    const char* env = std::getenv("MOVEIT_STRICT_COLLISION_MESHES");
+    return !env || (std::string(env) != "0" && std::string(env) != "false");
+  }();
+  return strict;
+}
+
+void reportCollisionMeshFailure(const std::string& filename)
+{
+  std::string msg = "[FATAL] Failed to load collision mesh: " + filename +
+                    "\n        The robot cannot operate without collision geometry."
+                    "\n        Set MOVEIT_STRICT_COLLISION_MESHES=0 to downgrade to a warning.\n";
+  std::cerr << "\n" << msg << std::endl;
+  std::string path = "/tmp/moveit_fatal_collision_mesh.log";
+  std::ofstream f(path, std::ios::app);
+  if (f.is_open())
+  {
+    f << msg;
+    std::cerr << "        (details written to " << path << ")" << std::endl;
+  }
+}
+}  // namespace
 
 namespace collision_detection_bullet
 {
@@ -92,6 +123,19 @@ shapes::ShapePtr constructShape(const urdf::Geometry* geom)
       {
         Eigen::Vector3d scale(mesh->scale.x, mesh->scale.y, mesh->scale.z);
         shapes::Mesh* m = shapes::createMeshFromResource(mesh->filename, scale);
+        if (!m)
+        {
+          if (strictCollisionMeshes())
+          {
+            reportCollisionMeshFailure(mesh->filename);
+            throw std::runtime_error("Failed to load collision mesh: " + mesh->filename +
+                                     ". The robot cannot operate without collision geometry."
+                                     " Set MOVEIT_STRICT_COLLISION_MESHES=0 to downgrade to a warning.");
+          }
+          RCLCPP_ERROR(getLogger(), "Failed to load collision mesh '%s' — collision geometry will be missing for this "
+                                    "link. Set MOVEIT_STRICT_COLLISION_MESHES=1 (default) to make this a fatal error.",
+                       mesh->filename.c_str());
+        }
         result = m;
       }
     }

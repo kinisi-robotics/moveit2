@@ -36,7 +36,20 @@
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
 #include <moveit/utils/logger.hpp>
+#include <cstdlib>
 #include <stdexcept>
+
+namespace
+{
+bool strictCollisionMeshes()
+{
+  static const bool strict = []() {
+    const char* env = std::getenv("MOVEIT_STRICT_COLLISION_MESHES");
+    return !env || (std::string(env) != "0" && std::string(env) != "false");
+  }();
+  return strict;
+}
+}  // namespace
 
 namespace collision_detection_bullet
 {
@@ -95,8 +108,15 @@ shapes::ShapePtr constructShape(const urdf::Geometry* geom)
         shapes::Mesh* m = shapes::createMeshFromResource(mesh->filename, scale);
         if (!m)
         {
-          throw std::runtime_error("Failed to load collision mesh: " + mesh->filename +
-                                   ". The robot cannot operate without collision geometry.");
+          if (strictCollisionMeshes())
+          {
+            throw std::runtime_error("Failed to load collision mesh: " + mesh->filename +
+                                     ". The robot cannot operate without collision geometry."
+                                     " Set MOVEIT_STRICT_COLLISION_MESHES=0 to downgrade to a warning.");
+          }
+          RCLCPP_ERROR(getLogger(), "Failed to load collision mesh '%s' — collision geometry will be missing for this "
+                                    "link. Set MOVEIT_STRICT_COLLISION_MESHES=1 (default) to make this a fatal error.",
+                       mesh->filename.c_str());
         }
         result = m;
       }

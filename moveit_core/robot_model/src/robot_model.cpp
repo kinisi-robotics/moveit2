@@ -41,6 +41,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -58,6 +60,24 @@ bool strictCollisionMeshes()
     return !env || (std::string(env) != "0" && std::string(env) != "false");
   }();
   return strict;
+}
+
+// ROS logging is not initialized when constructShape runs during RobotModel
+// construction. stderr is piped by ROS 2 launch and lost when the process
+// aborts. Write to a file so the message survives on disk.
+void reportCollisionMeshFailure(const std::string& filename)
+{
+  std::string msg = "[FATAL] Failed to load collision mesh: " + filename +
+                    "\n        The robot cannot operate without collision geometry."
+                    "\n        Set MOVEIT_STRICT_COLLISION_MESHES=0 to downgrade to a warning.\n";
+  std::cerr << "\n" << msg << std::endl;
+  std::string path = "/tmp/moveit_fatal_collision_mesh.log";
+  std::ofstream f(path, std::ios::app);
+  if (f.is_open())
+  {
+    f << msg;
+    std::cerr << "        (details written to " << path << ")" << std::endl;
+  }
 }
 }  // namespace
 
@@ -1297,6 +1317,7 @@ shapes::ShapePtr RobotModel::constructShape(const urdf::Geometry* geom)
         {
           if (strictCollisionMeshes())
           {
+            reportCollisionMeshFailure(mesh->filename);
             throw std::runtime_error("Failed to load collision mesh: " + mesh->filename +
                                      ". The robot cannot operate without collision geometry."
                                      " Set MOVEIT_STRICT_COLLISION_MESHES=0 to downgrade to a warning.");

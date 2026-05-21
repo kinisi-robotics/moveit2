@@ -37,6 +37,8 @@
 #include <rclcpp/logging.hpp>
 #include <moveit/utils/logger.hpp>
 #include <cstdlib>
+#include <fstream>
+#include <iostream>
 #include <stdexcept>
 
 namespace
@@ -48,6 +50,21 @@ bool strictCollisionMeshes()
     return !env || (std::string(env) != "0" && std::string(env) != "false");
   }();
   return strict;
+}
+
+void reportCollisionMeshFailure(const std::string& filename)
+{
+  std::string msg = "[FATAL] Failed to load collision mesh: " + filename +
+                    "\n        The robot cannot operate without collision geometry."
+                    "\n        Set MOVEIT_STRICT_COLLISION_MESHES=0 to downgrade to a warning.\n";
+  std::cerr << "\n" << msg << std::endl;
+  std::string path = "/tmp/moveit_fatal_collision_mesh.log";
+  std::ofstream f(path, std::ios::app);
+  if (f.is_open())
+  {
+    f << msg;
+    std::cerr << "        (details written to " << path << ")" << std::endl;
+  }
 }
 }  // namespace
 
@@ -110,6 +127,7 @@ shapes::ShapePtr constructShape(const urdf::Geometry* geom)
         {
           if (strictCollisionMeshes())
           {
+            reportCollisionMeshFailure(mesh->filename);
             throw std::runtime_error("Failed to load collision mesh: " + mesh->filename +
                                      ". The robot cannot operate without collision geometry."
                                      " Set MOVEIT_STRICT_COLLISION_MESHES=0 to downgrade to a warning.");

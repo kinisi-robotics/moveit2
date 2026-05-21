@@ -1,5 +1,6 @@
 add_library(moveit_utils SHARED src/lexical_casts.cpp src/message_checks.cpp
-                                src/rclcpp_utils.cpp src/logger.cpp)
+                                src/rclcpp_utils.cpp src/logger.cpp
+                                src/collision_mesh_check.cpp)
 target_include_directories(
   moveit_utils PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                       $<INSTALL_INTERFACE:include/moveit_core>)

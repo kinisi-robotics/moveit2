@@ -676,6 +676,9 @@ void PlanningSceneMonitor::getPlanningSceneServiceCallback(
   all_components.components = UINT_MAX;  // Return all scene components if nothing is specified.
 
   std::unique_lock<std::shared_mutex> ulock(scene_update_mutex_);
+  collision_detection::OccMapTree::ReadLock lock;
+  if (octomap_monitor_)
+    lock = octomap_monitor_->getOcTreePtr()->reading();
   scene_->getPlanningSceneMsg(res->scene, req->components.components ? req->components : all_components);
 }
 

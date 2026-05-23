@@ -42,6 +42,7 @@
 #include <limits>
 #include <cmath>
 #include <memory>
+#include <moveit/utils/collision_mesh_check.hpp>
 #include <moveit/utils/logger.hpp>
 
 #include "order_robot_model_items.inc"
@@ -1278,6 +1279,10 @@ shapes::ShapePtr RobotModel::constructShape(const urdf::Geometry* geom)
       {
         Eigen::Vector3d scale(mesh->scale.x, mesh->scale.y, mesh->scale.z);
         shapes::Mesh* m = shapes::createMeshFromResource(mesh->filename, scale);
+        if (!m)
+        {
+          moveit::handleCollisionMeshFailure(mesh->filename);
+        }
         new_shape = m;
       }
     }

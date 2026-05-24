@@ -90,6 +90,15 @@ TrajectoryExecutionManager::~TrajectoryExecutionManager()
     private_executor_->cancel();
   if (private_executor_thread_.joinable())
     private_executor_thread_.join();
+
+  // Remove the internal node from the executor and destroy both in the
+  // correct order.  Without this, implicit member destruction destroys
+  // private_executor_ before controller_mgr_node_, leaving the node's
+  // CallbackGroups referencing freed executor memory → SIGSEGV.
+  if (private_executor_ && controller_mgr_node_)
+    private_executor_->remove_node(controller_mgr_node_);
+  controller_mgr_node_.reset();
+  private_executor_.reset();
 }
 
 void TrajectoryExecutionManager::initialize()

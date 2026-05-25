@@ -42,6 +42,7 @@
 #include <boost/tokenizer.hpp>
 #include <moveit/macros/console_colors.hpp>
 #include <moveit/move_group/move_group_context.hpp>
+#include <cstdlib>
 #include <memory>
 #include <set>
 #include <moveit/utils/logger.hpp>
@@ -218,6 +219,13 @@ private:
 int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv);
+
+  // The SIGINT handler calls rclcpp::shutdown() which invalidates the rcl
+  // context.  Node/CallbackGroup destructors then SIGSEGV finalizing guard
+  // conditions against the dead context (upstream: moveit/moveit2#3680,
+  // ros2/rclcpp#2664).  Skip the problematic destructors entirely — the OS
+  // reclaims all resources on process exit.
+  rclcpp::on_shutdown([]() { std::_Exit(0); });
 
   rclcpp::NodeOptions opt;
   opt.allow_undeclared_parameters(true);

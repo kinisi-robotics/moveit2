@@ -90,6 +90,15 @@ TrajectoryExecutionManager::~TrajectoryExecutionManager()
     private_executor_->cancel();
   if (private_executor_thread_.joinable())
     private_executor_thread_.join();
+
+  // Remove the internal node from the executor before implicit member
+  // destruction.  Without this, private_executor_ is destroyed before
+  // controller_mgr_node_ (reverse declaration order), leaving the node's
+  // CallbackGroups referencing freed executor memory.
+  if (private_executor_ && controller_mgr_node_)
+    private_executor_->remove_node(controller_mgr_node_);
+  controller_mgr_node_.reset();
+  private_executor_.reset();
 }
 
 void TrajectoryExecutionManager::initialize()

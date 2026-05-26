@@ -44,6 +44,7 @@
 #include <moveit/move_group/move_group_context.hpp>
 #include <atomic>
 #include <csignal>
+#include <cstdlib>
 #include <memory>
 #include <set>
 #include <moveit/utils/logger.hpp>
@@ -219,8 +220,14 @@ private:
 
 // SIGINT/SIGTERM handler that cancels the executor without calling
 // rclcpp::shutdown().  This keeps the rcl context valid so that
-// Node/CallbackGroup destructors can finalize guard conditions without
-// SIGSEGV (upstream: moveit/moveit2#3680, ros2/rclcpp#2664).
+// rclcpp::shutdown() can cleanly deregister DDS participants before
+// we call std::_Exit() (upstream: moveit/moveit2#3680, rclcpp#2664).
+//
+// Why std::_Exit(): the apt-installed libmoveit_ros_occupancy_map_monitor
+// corrupts the heap via invalid frees in OccupancyMapUpdater callbacks
+// (ASAN-confirmed).  Normal destructors then SIGSEGV traversing the
+// corrupted heap.  We shut down rclcpp (deregistering DDS participants
+// so no ghost nodes) then _Exit to skip the destructors.
 namespace
 {
 std::atomic<rclcpp::executors::MultiThreadedExecutor*> g_executor{ nullptr };
@@ -236,20 +243,16 @@ extern "C" void move_group_signal_handler(int signum)
 
 int main(int argc, char** argv)
 {
-  // Don't install rclcpp's default signal handlers — they call
-  // rclcpp::shutdown() which invalidates the rcl context before
-  // Node/CallbackGroup destructors run, causing SIGSEGV.
   rclcpp::InitOptions init_options;
   init_options.shutdown_on_signal = false;
   rclcpp::init(argc, argv, init_options, rclcpp::SignalHandlerOptions::None);
 
-  {
-    rclcpp::NodeOptions opt;
-    opt.allow_undeclared_parameters(true);
-    opt.automatically_declare_parameters_from_overrides(true);
-    rclcpp::Node::SharedPtr nh = rclcpp::Node::make_shared("move_group", opt);
-    moveit::setNodeLoggerName(nh->get_name());
-    moveit_cpp::MoveItCpp::Options moveit_cpp_options(nh);
+  rclcpp::NodeOptions opt;
+  opt.allow_undeclared_parameters(true);
+  opt.automatically_declare_parameters_from_overrides(true);
+  rclcpp::Node::SharedPtr nh = rclcpp::Node::make_shared("move_group", opt);
+  moveit::setNodeLoggerName(nh->get_name());
+  moveit_cpp::MoveItCpp::Options moveit_cpp_options(nh);
 
     // Prepare PlanningPipelineOptions
     moveit_cpp_options.planning_pipeline_options.parent_namespace =
@@ -314,8 +317,8 @@ int main(int argc, char** argv)
     }
 
     // Initialize MoveItCpp
-    const auto moveit_cpp = std::make_shared<moveit_cpp::MoveItCpp>(nh, moveit_cpp_options);
-    const auto planning_scene_monitor = moveit_cpp->getPlanningSceneMonitorNonConst();
+    auto moveit_cpp = std::make_shared<moveit_cpp::MoveItCpp>(nh, moveit_cpp_options);
+    auto planning_scene_monitor = moveit_cpp->getPlanningSceneMonitorNonConst();
 
     if (planning_scene_monitor->getPlanningScene())
     {
@@ -359,13 +362,15 @@ int main(int argc, char** argv)
       executor.spin();
 
       g_executor.store(nullptr, std::memory_order_release);
+      executor.remove_node(nh);
     }
     else
     {
       RCLCPP_ERROR(nh->get_logger(), "Planning scene not configured");
     }
-  }  // All MoveIt/node resources destroyed here — context still valid.
 
+  // Deregister DDS participants so no ghost nodes remain, then _Exit
+  // to skip destructors that would SIGSEGV on the corrupted heap.
   rclcpp::shutdown();
-  return 0;
+  std::_Exit(0);
 }

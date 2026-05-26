@@ -227,8 +227,8 @@ std::atomic<rclcpp::executors::MultiThreadedExecutor*> g_executor{ nullptr };
 
 extern "C" void move_group_signal_handler(int signum)
 {
-  std::signal(signum, SIG_IGN);
-  auto* exec = g_executor.load(std::memory_order_relaxed);
+  std::signal(signum, SIG_DFL);
+  auto* exec = g_executor.load(std::memory_order_acquire);
   if (exec)
     exec->cancel();
 }

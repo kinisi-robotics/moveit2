@@ -676,6 +676,13 @@ void PlanningSceneMonitor::getPlanningSceneServiceCallback(
   all_components.components = UINT_MAX;  // Return all scene components if nothing is specified.
 
   std::unique_lock<std::shared_mutex> ulock(scene_update_mutex_);
+  // The octomap in the scene's world is the OccupancyMapMonitor's live tree, mutated in place by
+  // the sensor-update thread; serializing it without the octree read lock races those updates
+  // (scenePublishingThread takes this lock before every serialization for the same reason).
+  // Lock order (scene, then octree) matches lockSceneRead() and octomapUpdateCallback().
+  collision_detection::OccMapTree::ReadLock octree_lock;
+  if (octomap_monitor_)
+    octree_lock = octomap_monitor_->getOcTreePtr()->reading();
   scene_->getPlanningSceneMsg(res->scene, req->components.components ? req->components : all_components);
 }
 

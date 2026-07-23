@@ -144,6 +144,9 @@ PlanningSceneMonitor::~PlanningSceneMonitor()
   private_executor_->cancel();
   if (private_executor_thread_.joinable())
     private_executor_thread_.join();
+  if (private_executor_ && pnode_)
+    private_executor_->remove_node(pnode_);
+  pnode_.reset();
   private_executor_.reset();
 
   current_state_monitor_.reset();

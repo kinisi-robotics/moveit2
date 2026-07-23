@@ -42,6 +42,8 @@
 #include <boost/tokenizer.hpp>
 #include <moveit/macros/console_colors.hpp>
 #include <moveit/move_group/move_group_context.hpp>
+#include <atomic>
+#include <csignal>
 #include <cstdlib>
 #include <memory>
 #include <set>
@@ -216,16 +218,34 @@ private:
 };
 }  // namespace move_group
 
+// SIGINT/SIGTERM handler that cancels the executor without calling
+// rclcpp::shutdown().  This keeps the rcl context valid so that
+// rclcpp::shutdown() can cleanly deregister DDS participants before
+// we call std::_Exit() (upstream: moveit/moveit2#3680, rclcpp#2664).
+//
+// Why std::_Exit(): the apt-installed libmoveit_ros_occupancy_map_monitor
+// corrupts the heap via invalid frees in OccupancyMapUpdater callbacks
+// (ASAN-confirmed).  Normal destructors then SIGSEGV traversing the
+// corrupted heap.  We shut down rclcpp (deregistering DDS participants
+// so no ghost nodes) then _Exit to skip the destructors.
+namespace
+{
+std::atomic<rclcpp::executors::MultiThreadedExecutor*> g_executor{ nullptr };
+
+extern "C" void move_group_signal_handler(int signum)
+{
+  std::signal(signum, SIG_DFL);
+  auto* exec = g_executor.load(std::memory_order_acquire);
+  if (exec)
+    exec->cancel();
+}
+}  // namespace
+
 int main(int argc, char** argv)
 {
-  rclcpp::init(argc, argv);
-
-  // The SIGINT handler calls rclcpp::shutdown() which invalidates the rcl
-  // context.  Node/CallbackGroup destructors then SIGSEGV finalizing guard
-  // conditions against the dead context (upstream: moveit/moveit2#3680,
-  // ros2/rclcpp#2664).  Skip the problematic destructors entirely — the OS
-  // reclaims all resources on process exit.
-  rclcpp::on_shutdown([]() { std::_Exit(0); });
+  rclcpp::InitOptions init_options;
+  init_options.shutdown_on_signal = false;
+  rclcpp::init(argc, argv, init_options, rclcpp::SignalHandlerOptions::None);
 
   rclcpp::NodeOptions opt;
   opt.allow_undeclared_parameters(true);
@@ -234,112 +254,123 @@ int main(int argc, char** argv)
   moveit::setNodeLoggerName(nh->get_name());
   moveit_cpp::MoveItCpp::Options moveit_cpp_options(nh);
 
-  // Prepare PlanningPipelineOptions
-  moveit_cpp_options.planning_pipeline_options.parent_namespace = nh->get_effective_namespace() + ".planning_pipelines";
-  std::vector<std::string> planning_pipeline_configs;
-  if (nh->get_parameter("planning_pipelines", planning_pipeline_configs))
-  {
-    if (planning_pipeline_configs.empty())
+    // Prepare PlanningPipelineOptions
+    moveit_cpp_options.planning_pipeline_options.parent_namespace =
+        nh->get_effective_namespace() + ".planning_pipelines";
+    std::vector<std::string> planning_pipeline_configs;
+    if (nh->get_parameter("planning_pipelines", planning_pipeline_configs))
     {
-      RCLCPP_ERROR(nh->get_logger(), "Failed to read parameter 'move_group.planning_pipelines'");
-    }
-    else
-    {
-      for (const auto& config : planning_pipeline_configs)
+      if (planning_pipeline_configs.empty())
       {
-        moveit_cpp_options.planning_pipeline_options.pipeline_names.push_back(config);
+        RCLCPP_ERROR(nh->get_logger(), "Failed to read parameter 'move_group.planning_pipelines'");
+      }
+      else
+      {
+        for (const auto& config : planning_pipeline_configs)
+        {
+          moveit_cpp_options.planning_pipeline_options.pipeline_names.push_back(config);
+        }
       }
     }
-  }
 
-  // Retrieve default planning pipeline
-  auto& pipeline_names = moveit_cpp_options.planning_pipeline_options.pipeline_names;
-  std::string default_planning_pipeline;
-  if (nh->get_parameter("default_planning_pipeline", default_planning_pipeline))
-  {
-    // Ignore default_planning_pipeline if there is no matching entry in pipeline_names
-    if (std::find(pipeline_names.begin(), pipeline_names.end(), default_planning_pipeline) == pipeline_names.end())
+    // Retrieve default planning pipeline
+    auto& pipeline_names = moveit_cpp_options.planning_pipeline_options.pipeline_names;
+    std::string default_planning_pipeline;
+    if (nh->get_parameter("default_planning_pipeline", default_planning_pipeline))
     {
+      // Ignore default_planning_pipeline if there is no matching entry in pipeline_names
+      if (std::find(pipeline_names.begin(), pipeline_names.end(), default_planning_pipeline) == pipeline_names.end())
+      {
+        RCLCPP_WARN(nh->get_logger(),
+                    "MoveGroup launched with ~default_planning_pipeline '%s' not configured in ~planning_pipelines",
+                    default_planning_pipeline.c_str());
+        default_planning_pipeline = "";  // reset invalid pipeline id
+      }
+    }
+    else if (pipeline_names.size() > 1)  // only warn if there are multiple pipelines to choose from
+    {
+      // Handle deprecated move_group.launch
       RCLCPP_WARN(nh->get_logger(),
-                  "MoveGroup launched with ~default_planning_pipeline '%s' not configured in ~planning_pipelines",
-                  default_planning_pipeline.c_str());
-      default_planning_pipeline = "";  // reset invalid pipeline id
-    }
-  }
-  else if (pipeline_names.size() > 1)  // only warn if there are multiple pipelines to choose from
-  {
-    // Handle deprecated move_group.launch
-    RCLCPP_WARN(nh->get_logger(),
-                "MoveGroup launched without ~default_planning_pipeline specifying the namespace for the default "
-                "planning pipeline configuration");
-  }
-
-  // If there is no valid default pipeline, either pick the first available one, or fall back to old behavior
-  if (default_planning_pipeline.empty())
-  {
-    if (!pipeline_names.empty())
-    {
-      RCLCPP_WARN(nh->get_logger(), "Using default pipeline '%s'", pipeline_names[0].c_str());
-      default_planning_pipeline = pipeline_names[0];
-    }
-    else
-    {
-      RCLCPP_WARN(nh->get_logger(), "Falling back to using the the move_group node namespace (deprecated behavior).");
-      default_planning_pipeline = "move_group";
-      moveit_cpp_options.planning_pipeline_options.pipeline_names = { default_planning_pipeline };
-      moveit_cpp_options.planning_pipeline_options.parent_namespace = nh->get_effective_namespace();
+                  "MoveGroup launched without ~default_planning_pipeline specifying the namespace for the default "
+                  "planning pipeline configuration");
     }
 
-    // Reset invalid pipeline parameter for MGI requests
-    nh->set_parameter(rclcpp::Parameter("default_planning_pipeline", default_planning_pipeline));
-  }
-
-  // Initialize MoveItCpp
-  const auto moveit_cpp = std::make_shared<moveit_cpp::MoveItCpp>(nh, moveit_cpp_options);
-  const auto planning_scene_monitor = moveit_cpp->getPlanningSceneMonitorNonConst();
-
-  if (planning_scene_monitor->getPlanningScene())
-  {
-    bool debug = false;
-    for (int i = 1; i < argc; ++i)
+    // If there is no valid default pipeline, either pick the first available one, or fall back to old behavior
+    if (default_planning_pipeline.empty())
     {
-      if (strncmp(argv[i], "--debug", 7) == 0)
+      if (!pipeline_names.empty())
       {
-        debug = true;
-        break;
+        RCLCPP_WARN(nh->get_logger(), "Using default pipeline '%s'", pipeline_names[0].c_str());
+        default_planning_pipeline = pipeline_names[0];
       }
+      else
+      {
+        RCLCPP_WARN(nh->get_logger(),
+                    "Falling back to using the the move_group node namespace (deprecated behavior).");
+        default_planning_pipeline = "move_group";
+        moveit_cpp_options.planning_pipeline_options.pipeline_names = { default_planning_pipeline };
+        moveit_cpp_options.planning_pipeline_options.parent_namespace = nh->get_effective_namespace();
+      }
+
+      // Reset invalid pipeline parameter for MGI requests
+      nh->set_parameter(rclcpp::Parameter("default_planning_pipeline", default_planning_pipeline));
     }
-    debug = true;
-    if (debug)
+
+    // Initialize MoveItCpp
+    auto moveit_cpp = std::make_shared<moveit_cpp::MoveItCpp>(nh, moveit_cpp_options);
+    auto planning_scene_monitor = moveit_cpp->getPlanningSceneMonitorNonConst();
+
+    if (planning_scene_monitor->getPlanningScene())
     {
-      RCLCPP_INFO(nh->get_logger(), "MoveGroup debug mode is ON");
+      bool debug = false;
+      for (int i = 1; i < argc; ++i)
+      {
+        if (strncmp(argv[i], "--debug", 7) == 0)
+        {
+          debug = true;
+          break;
+        }
+      }
+      debug = true;
+      if (debug)
+      {
+        RCLCPP_INFO(nh->get_logger(), "MoveGroup debug mode is ON");
+      }
+      else
+      {
+        RCLCPP_INFO(nh->get_logger(), "MoveGroup debug mode is OFF");
+      }
+
+      rclcpp::executors::MultiThreadedExecutor executor;
+      g_executor.store(&executor, std::memory_order_release);
+      std::signal(SIGINT, move_group_signal_handler);
+      std::signal(SIGTERM, move_group_signal_handler);
+
+      move_group::MoveGroupExe mge(moveit_cpp, default_planning_pipeline, debug);
+
+      bool monitor_dynamics;
+      if (nh->get_parameter("monitor_dynamics", monitor_dynamics) && monitor_dynamics)
+      {
+        RCLCPP_INFO(nh->get_logger(), "MoveGroup monitors robot dynamics (higher load)");
+        planning_scene_monitor->getStateMonitor()->enableCopyDynamics(true);
+      }
+
+      planning_scene_monitor->publishDebugInformation(debug);
+
+      mge.status();
+      executor.add_node(nh);
+      executor.spin();
+
+      g_executor.store(nullptr, std::memory_order_release);
+      executor.remove_node(nh);
     }
     else
     {
-      RCLCPP_INFO(nh->get_logger(), "MoveGroup debug mode is OFF");
+      RCLCPP_ERROR(nh->get_logger(), "Planning scene not configured");
     }
 
-    rclcpp::executors::MultiThreadedExecutor executor;
-
-    move_group::MoveGroupExe mge(moveit_cpp, default_planning_pipeline, debug);
-
-    bool monitor_dynamics;
-    if (nh->get_parameter("monitor_dynamics", monitor_dynamics) && monitor_dynamics)
-    {
-      RCLCPP_INFO(nh->get_logger(), "MoveGroup monitors robot dynamics (higher load)");
-      planning_scene_monitor->getStateMonitor()->enableCopyDynamics(true);
-    }
-
-    planning_scene_monitor->publishDebugInformation(debug);
-
-    mge.status();
-    executor.add_node(nh);
-    executor.spin();
-
-    rclcpp::shutdown();
-  }
-  else
-    RCLCPP_ERROR(nh->get_logger(), "Planning scene not configured");
-
-  return 0;
+  // Deregister DDS participants so no ghost nodes remain, then _Exit
+  // to skip destructors that would SIGSEGV on the corrupted heap.
+  rclcpp::shutdown();
+  std::_Exit(0);
 }

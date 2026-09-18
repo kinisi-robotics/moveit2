@@ -93,6 +93,7 @@ private:
   double padding_;
   double max_range_;
   unsigned int point_subsample_;
+  std::size_t queue_size_;
   double max_update_rate_;
   std::string filtered_cloud_topic_;
   std::string ns_;

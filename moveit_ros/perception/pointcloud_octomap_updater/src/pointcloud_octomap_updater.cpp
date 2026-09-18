@@ -65,6 +65,7 @@ PointCloudOctomapUpdater::PointCloudOctomapUpdater()
   , padding_(0.0)
   , max_range_(std::numeric_limits<double>::infinity())
   , point_subsample_(1)
+  , queue_size_(5)
   , max_update_rate_(0)
   , point_cloud_subscriber_(nullptr)
   , point_cloud_filter_(nullptr)
@@ -76,6 +77,7 @@ bool PointCloudOctomapUpdater::setParams(const std::string& name_space)
 {
   // This parameter is optional
   node_->get_parameter_or(name_space + ".ns", ns_, std::string());
+  node_->get_parameter_or(name_space + ".queue_size", queue_size_, std::size_t(5));
   return node_->get_parameter(name_space + ".point_cloud_topic", point_cloud_topic_) &&
          node_->get_parameter(name_space + ".max_range", max_range_) &&
          node_->get_parameter(name_space + ".padding_offset", padding_) &&
@@ -129,11 +131,11 @@ void PointCloudOctomapUpdater::start()
   if (tf_listener_ && tf_buffer_ && !monitor_->getMapFrame().empty())
   {
     point_cloud_filter_ = new tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>(
-        *point_cloud_subscriber_, *tf_buffer_, monitor_->getMapFrame(), 5, node_);
+        *point_cloud_subscriber_, *tf_buffer_, monitor_->getMapFrame(), queue_size_, node_);
     point_cloud_filter_->registerCallback(
         [this](const sensor_msgs::msg::PointCloud2::ConstSharedPtr& cloud) { cloudMsgCallback(cloud); });
-    RCLCPP_INFO(logger_, "Listening to '%s' using message filter with target frame '%s'", point_cloud_topic_.c_str(),
-                point_cloud_filter_->getTargetFramesString().c_str());
+    RCLCPP_INFO(logger_, "Listening to '%s' using message filter with target frame '%s' and queue size %zu",
+                point_cloud_topic_.c_str(), point_cloud_filter_->getTargetFramesString().c_str(), queue_size_);
   }
   else
   {

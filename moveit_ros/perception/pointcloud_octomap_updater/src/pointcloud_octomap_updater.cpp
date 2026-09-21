@@ -132,7 +132,10 @@ void PointCloudOctomapUpdater::start()
 #endif
   point_cloud_subscriber_ =
       new message_filters::Subscriber<sensor_msgs::msg::PointCloud2>(node_, point_cloud_topic_, qos_profile, options);
-  if (tf_listener_ && tf_buffer_ && !monitor_->getMapFrame().empty())
+  // The message filter needs the buffer, not the listener: tf_listener_ is only
+  // set when the monitor had no buffer to share, so gating on it puts the shared
+  // path on a bare subscriber and drops every cloud whose transform is late.
+  if (tf_buffer_ && !monitor_->getMapFrame().empty())
   {
     point_cloud_filter_ = new tf2_ros::MessageFilter<sensor_msgs::msg::PointCloud2>(
         *point_cloud_subscriber_, *tf_buffer_, monitor_->getMapFrame(), queue_size_, node_);
